@@ -71,6 +71,30 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+// The endpoint to handle new user registrations in the Neon database
+app.post('/api/signup', async (req, res) => {
+  try {
+    const { name, username, password, is_manager } = req.body;
+    
+    // Check if the username already exists
+    const existing = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ success: false, error: 'Username already taken' });
+    }
+    
+    // Insert the new user into the database
+    const result = await pool.query(
+      'INSERT INTO users (name, username, password, is_manager) VALUES ($1, $2, $3, $4) RETURNING *',
+      [name, username, password, is_manager || false]
+    );
+    
+    res.json({ success: true, user: result.rows[0] });
+  } catch (err) {
+    console.error('Signup error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // GET AGGREGATED REPORT BY CATEGORY
 app.get('/api/reports', async (req, res) => {
   try {
