@@ -51,6 +51,26 @@ app.post('/api/sync', async (req, res) => {
   }
 });
 
+// The endpoint to handle secure user logins against the database
+app.post('/api/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    const result = await pool.query(
+      'SELECT * FROM users WHERE username = $1 AND password = $2', 
+      [username, password]
+    );
+    
+    if (result.rows.length > 0) {
+      res.json({ success: true, user: result.rows[0] });
+    } else {
+      res.status(401).json({ success: false, error: 'Invalid username or password' });
+    }
+  } catch (err) {
+    console.error('Login error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // GET AGGREGATED REPORT BY CATEGORY
 app.get('/api/reports', async (req, res) => {
   try {
