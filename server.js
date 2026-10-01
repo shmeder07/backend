@@ -172,7 +172,7 @@ app.post('/api/users/login', async (req, res) => {
 
     // Block login if pending approval
     if (user.status === 'pending') {
-      return res.status(403).json({ error: 'Account pending manager approval. Contact Eder or Audrey.' });
+      return res.status(403).json({ error: 'Account pending manager approval. Contact Audrey.' });
     }
 
     res.json(user);
@@ -202,6 +202,23 @@ app.put('/api/users/approve/:id', async (req, res) => {
   } catch (err) {
     console.error('Error approving user:', err);
     res.status(500).json({ error: 'Failed to approve user' });
+  }
+});
+
+// UPDATE STAFF PERMISSIONS / FIELDS IN NEON
+app.put('/api/users/update/:id', async (req, res) => {
+  const { id } = req.params;
+  const { is_manager, fields } = req.body;
+
+  try {
+    await pool.query(
+      'UPDATE users SET is_manager = $1, fields = $2 WHERE id = $3',
+      [Boolean(is_manager), JSON.stringify(fields || []), id]
+    );
+    res.json({ message: 'User permissions updated successfully' });
+  } catch (err) {
+    console.error('Error updating user permissions:', err);
+    res.status(500).json({ error: 'Failed to update user permissions' });
   }
 });
 
