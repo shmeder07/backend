@@ -4,16 +4,72 @@ const { Pool } = require('pg');
 
 const app = express();
 
+// Enable CORS and high payload limit for seeding large item arrays
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Connect to Neon PostgreSQL Database
 const pool = new Pool({
   connectionString: 'postgresql://neondb_owner:npg_PRjNZlQ51yqx@ep-silent-credit-b7l751ny-pooler.c-13.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require',
-  ssl: { rejectUnauthorized: false } 
+  ssl: { rejectUnauthorized: false }
 });
 
-// 1. SYNC WASTE DATA
+/* ==========================================================================
+   1. ITEMS MANAGEMENT ENDPOINTS (Neon Database)
+   ========================================================================== */
+
+// GET ALL ITEMS FROM NEON
+app.get('/api/items', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, category, name, unit_cost FROM items ORDER BY name ASC');
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching items from Neon:', err);
+    res.status(500).json({ error: 'Failed to fetch items from database' });
+  }
+});
+
+// ONE-TIME SEEDER ENDPOINT (Populates Neon `items` table from payload)
+app.post('/api/seed-items', async (req, res) => {
+  const { customItems } = req.body;
+  if (!customItems) return res.status(400).json({ error: 'No items payload provided' });
+
+  try {
+    // Clear existing items to prevent duplicates
+    await pool.query('TRUNCATE TABLE items RESTART IDENTITY;');
+
+    for (const [category, itemArray] of Object.entries(customItems)) {
+      for (const [name, cost] of itemArray) {
+        await pool.query(
+          'INSERT INTO items (category, name, unit_cost) VALUES ($1, $2, $3)',
+          [category, name, parseFloat(cost) || 0.00]
+        );
+      }
+    }
+    res.json({ success: true, message: 'All items successfully seeded into Neon database!' });
+  } catch (err) {
+    console.error('Error seeding items into Neon:', err);
+    res.status(500).json({ error: 'Failed to seed items into database' });
+  }
+});
+
+/* ==========================================================================
+   2. WASTE LOGS ENDPOINTS
+   ========================================================================== */
+
+// GET ALL LOGS FOR APP & CSV EXPORT
+app.get('/api/logs', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM waste_logs ORDER BY id DESC;');
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching logs:', err);
+    res.status(500).json({ error: 'Failed to fetch logs' });
+  }
+});
+
+// SAVE NEW WASTE LOG(S) TO NEON
 app.post('/api/sync', async (req, res) => {
   try {
     const wasteData = req.body;
@@ -21,9 +77,20 @@ app.post('/api/sync', async (req, res) => {
 
     for (let row of records) {
       await pool.query(
-        `INSERT INTO waste_logs (day, time, shift, category, item, quantity, unit_cost, total_cost, reason, staff)
+        `INSERT INTO waste_logs (day, time, shift, category, item_name, quantity, unit_cost, total_cost, reason, logged_by)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-        [row.Date, row.Time, row.Shift, row.Category, row.Item, row.Quantity, row.Cost, row.Total, row.Reason || '', row.LoggedBy]
+        [
+          row.day || new Date().toISOString().slice(0, 10),
+          row.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          row.shift || 'AM',
+          row.category,
+          row.item_name || row.item,
+          row.quantity || row.qty || 1,
+          row.unit_cost || row.cost || 0,
+          row.total_cost || row.total || 0,
+          row.reason || '',
+          row.logged_by || row.staff || 'Unknown'
+        ]
       );
     }
     res.status(200).json({ message: 'Data synced successfully to Neon!' });
@@ -33,18 +100,34 @@ app.post('/api/sync', async (req, res) => {
   }
 });
 
-// 2. FETCH ALL USERS (For Manager Setup Menu)
+// DELETE A LOG BY ID
+app.delete('/api/logs/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.query('DELETE FROM waste_logs WHERE id = $1', [id]);
+    res.json({ message: 'Log deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting log:', err);
+    res.status(500).json({ error: 'Failed to delete log' });
+  }
+});
+
+/* ==========================================================================
+   3. USER AUTHENTICATION & MANAGEMENT ENDPOINTS
+   ========================================================================== */
+
+// FETCH ALL USERS (For Manager Setup Menu)
 app.get('/api/users', async (req, res) => {
   try {
     const result = await pool.query('SELECT id, name, username, is_manager, fields FROM users ORDER BY id ASC');
     res.json(result.rows);
   } catch (err) {
-    console.error(err);
+    console.error('Error fetching users:', err);
     res.status(500).json({ error: 'Failed to fetch users' });
   }
 });
 
-// 3. REGISTER NEW USER
+// REGISTER NEW USER IN NEON
 app.post('/api/users/register', async (req, res) => {
   const { name, username, password, is_manager, fields } = req.body;
   
@@ -63,17 +146,17 @@ app.post('/api/users/register', async (req, res) => {
       VALUES ($1, $2, $3, $4, $5)
       RETURNING id, name, username, is_manager, fields;
     `;
-    const values = [name, username.toLowerCase(), password, is_manager || false, JSON.stringify(fields || [])];
+    const values = [name, username.toLowerCase(), password, Boolean(is_manager), JSON.stringify(fields || [])];
     const result = await pool.query(query, values);
     
     res.status(201).json(result.rows[0]);
   } catch (err) {
-    console.error(err);
+    console.error('Registration error:', err);
     res.status(500).json({ error: 'Failed to register user' });
   }
 });
 
-// 4. LOGIN USER
+// LOGIN USER AGAINST NEON
 app.post('/api/users/login', async (req, res) => {
   const { username, password } = req.body;
 
@@ -87,12 +170,15 @@ app.post('/api/users/login', async (req, res) => {
 
     res.json(result.rows[0]);
   } catch (err) {
-    console.error(err);
+    console.error('Login error:', err);
     res.status(500).json({ error: 'Login failed' });
   }
 });
 
-// 5. GET AGGREGATED REPORT BY CATEGORY
+/* ==========================================================================
+   4. AGGREGATED REPORTS ENDPOINT
+   ========================================================================== */
+
 app.get('/api/reports', async (req, res) => {
   try {
     const query = `
@@ -106,17 +192,6 @@ app.get('/api/reports', async (req, res) => {
   } catch (err) {
     console.error('Error fetching report:', err);
     res.status(500).json({ error: 'Failed to fetch report' });
-  }
-});
-
-// 6. GET ALL LOGS FOR CSV EXPORT
-app.get('/api/logs', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM waste_logs ORDER BY id DESC;');
-    res.json(result.rows);
-  } catch (err) {
-    console.error('Error fetching logs:', err);
-    res.status(500).json({ error: 'Failed to fetch logs' });
   }
 });
 
