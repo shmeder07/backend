@@ -127,7 +127,7 @@ app.get('/api/users', async (req, res) => {
   }
 });
 
-// REGISTER NEW USER IN NEON
+// REGISTER NEW USER IN NEON (Set to pending status)
 app.post('/api/users/register', async (req, res) => {
   const { name, username, password, is_manager, fields } = req.body;
   
@@ -142,13 +142,13 @@ app.post('/api/users/register', async (req, res) => {
     }
 
     const query = `
-      INSERT INTO users (name, username, password, is_manager, fields)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING id, name, username, is_manager, fields;
+      INSERT INTO users (name, username, password, is_manager, fields, status)
+      VALUES ($1, $2, $3, $4, $5, 'pending')
+      RETURNING id, name, username, is_manager, fields, status;
     `;
     const values = [name, username.toLowerCase(), password, Boolean(is_manager), JSON.stringify(fields || [])];
     const result = await pool.query(query, values);
-    
+      
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error('Registration error:', err);
@@ -156,22 +156,52 @@ app.post('/api/users/register', async (req, res) => {
   }
 });
 
-// LOGIN USER AGAINST NEON
+// LOGIN USER AGAINST NEON (Block pending accounts)
 app.post('/api/users/login', async (req, res) => {
   const { username, password } = req.body;
 
   try {
-    const query = 'SELECT id, name, username, is_manager, fields FROM users WHERE username = $1 AND password = $2';
+    const query = 'SELECT id, name, username, is_manager, fields, status FROM users WHERE username = $1 AND password = $2';
     const result = await pool.query(query, [username.toLowerCase(), password]);
 
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
 
-    res.json(result.rows[0]);
+    const user = result.rows[0];
+
+    // Block login if pending approval
+    if (user.status === 'pending') {
+      return res.status(403).json({ error: 'Account pending manager approval. Contact Eder or Audrey.' });
+    }
+
+    res.json(user);
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// FETCH PENDING USERS (For Manager Approval Queue)
+app.get('/api/users/pending', async (req, res) => {
+  try {
+    const result = await pool.query("SELECT id, name, username, is_manager, fields FROM users WHERE status = 'pending' ORDER BY id ASC");
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching pending users:', err);
+    res.status(500).json({ error: 'Failed to fetch pending users' });
+  }
+});
+
+// APPROVE PENDING USER
+app.put('/api/users/approve/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.query("UPDATE users SET status = 'active' WHERE id = $1", [id]);
+    res.json({ message: 'User approved successfully' });
+  } catch (err) {
+    console.error('Error approving user:', err);
+    res.status(500).json({ error: 'Failed to approve user' });
   }
 });
 
